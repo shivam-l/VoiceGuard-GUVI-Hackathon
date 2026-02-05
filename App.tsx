@@ -4,6 +4,8 @@ import { SUPPORTED_LANGUAGES, DetectionResultType, AnalysisResult, TesterState, 
 import { analyzeAudio } from './services/geminiService';
 import { BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip } from 'recharts';
 
+const SUPPORTED_FORMATS = ['mp3', 'wav', 'aac', 'ogg'];
+
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'lab' | 'tester' | 'honeypot' | 'guidelines'>('lab');
   
@@ -19,7 +21,7 @@ const App: React.FC = () => {
   const [tester, setTester] = useState<TesterState>({
     endpoint: '',
     apiKey: '',
-    language: 'English',
+    language: SUPPORTED_LANGUAGES[0].name,
     audioFormat: 'mp3',
     audioBase64: '',
     status: 'idle',
@@ -82,12 +84,38 @@ const App: React.FC = () => {
     }
   };
 
+  // Helper to load sample base64 for tester
+  const loadSampleTesterData = () => {
+    setTester(prev => ({
+      ...prev,
+      language: 'English',
+      audioFormat: 'mp3',
+      // This is a tiny valid silent MP3 base64 string for testing purposes
+      audioBase64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjEwMC4xMDAAAAAAAAAAAAAAAAD/80MUAAAAAAAAAAAAAAAAAAAAAExhdmY2MC4xMDAuMTAwAP/zQxQAAAAAAAAAAAAAAAAAAAAAExhdmY2MC4xMDAuMTAwAP/zQxQAAAAAAAAAAAAAAAAAAAAA'
+    }));
+  };
+
   // Voice Tester Actions
   const handleTestEndpoint = async () => {
-    if (!tester.endpoint || !tester.apiKey || !tester.audioBase64) {
-      setTester(prev => ({ ...prev, status: 'error', response: { error: "Missing mandatory fields (*) required for validation." } }));
+    const missingFields = [];
+    if (!tester.endpoint) missingFields.push('Endpoint URL');
+    if (!tester.apiKey) missingFields.push('x-api-key');
+    if (!tester.language) missingFields.push('Language');
+    if (!tester.audioFormat) missingFields.push('Audio Format');
+    if (!tester.audioBase64) missingFields.push('Audio Base64 Format');
+
+    if (missingFields.length > 0) {
+      setTester(prev => ({ 
+        ...prev, 
+        status: 'error', 
+        response: { 
+          error: "Missing mandatory fields (*) required for validation.",
+          details: `The following fields are empty: ${missingFields.join(', ')}`
+        } 
+      }));
       return;
     }
+
     setTester(prev => ({ ...prev, status: 'loading', response: null, latency: null }));
     const startTime = performance.now();
     try {
@@ -104,7 +132,15 @@ const App: React.FC = () => {
         })
       });
       const endTime = performance.now();
-      const data = await response.json();
+      
+      let data;
+      const responseText = await response.text();
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        data = { response: responseText };
+      }
+
       setTester(prev => ({ 
         ...prev, 
         status: response.ok ? 'success' : 'error', 
@@ -112,7 +148,7 @@ const App: React.FC = () => {
         latency: Math.round(endTime - startTime)
       }));
     } catch (err: any) {
-      setTester(prev => ({ ...prev, status: 'error', response: { error: err.message } }));
+      setTester(prev => ({ ...prev, status: 'error', response: { error: err.message || "Failed to connect to the provided endpoint." } }));
     }
   };
 
@@ -281,11 +317,19 @@ const App: React.FC = () => {
         {activeTab === 'tester' && (
           <section className="space-y-8 animate-in fade-in duration-300">
             <div className="max-w-3xl mx-auto space-y-6">
-              <div className="text-left space-y-3">
-                <h2 className="text-2xl font-bold text-slate-100">AI-Generated Voice Detection – API Endpoint Tester</h2>
-                <p className="text-sm text-slate-400 leading-relaxed">
-                  Validate your voice authentication endpoint before submission. Test authentication, payload handling, and JSON structure by submitting a sample audio base64 input.
-                </p>
+              <div className="flex justify-between items-end">
+                <div className="text-left space-y-3">
+                  <h2 className="text-2xl font-bold text-slate-100">AI-Generated Voice Detection – API Endpoint Tester</h2>
+                  <p className="text-sm text-slate-400 leading-relaxed max-w-lg">
+                    Validate your voice authentication endpoint before submission. Test authentication, payload handling, and JSON structure.
+                  </p>
+                </div>
+                <button 
+                  onClick={loadSampleTesterData}
+                  className="mb-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded-lg border border-slate-600 transition-all flex items-center gap-2"
+                >
+                  <i className="fa-solid fa-wand-magic-sparkles"></i> Load Sample Data
+                </button>
               </div>
 
               {/* Exact Screenshot Replication Layout */}
@@ -330,24 +374,38 @@ const App: React.FC = () => {
                   
                   <div className="space-y-2">
                     <label className="block text-xs font-medium text-slate-400">Language <span className="text-rose-500">*</span></label>
-                    <input 
-                      type="text" 
-                      placeholder="Enter language (e.g., English, Tamil)" 
-                      className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#0052cc] transition-all" 
-                      value={tester.language} 
-                      onChange={(e) => setTester(prev => ({ ...prev, language: e.target.value }))} 
-                    />
+                    <div className="relative">
+                      <select 
+                        className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#0052cc] transition-all appearance-none" 
+                        value={tester.language} 
+                        onChange={(e) => setTester(prev => ({ ...prev, language: e.target.value }))} 
+                      >
+                        {SUPPORTED_LANGUAGES.map(lang => (
+                          <option key={lang.code} value={lang.name}>{lang.name}</option>
+                        ))}
+                      </select>
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                        <i className="fa-solid fa-chevron-down text-xs"></i>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
                     <label className="block text-xs font-medium text-slate-400">Audio Format <span className="text-rose-500">*</span></label>
-                    <input 
-                      type="text" 
-                      placeholder="Enter audio format (e.g., mp3)" 
-                      className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#0052cc] transition-all" 
-                      value={tester.audioFormat} 
-                      onChange={(e) => setTester(prev => ({ ...prev, audioFormat: e.target.value }))} 
-                    />
+                    <div className="relative">
+                      <select 
+                        className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#0052cc] transition-all appearance-none" 
+                        value={tester.audioFormat} 
+                        onChange={(e) => setTester(prev => ({ ...prev, audioFormat: e.target.value }))} 
+                      >
+                        {SUPPORTED_FORMATS.map(fmt => (
+                          <option key={fmt} value={fmt}>{fmt}</option>
+                        ))}
+                      </select>
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                        <i className="fa-solid fa-chevron-down text-xs"></i>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -398,15 +456,15 @@ const App: React.FC = () => {
                       <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-4 tracking-widest">Performance Metrics</h4>
                       <div className="text-3xl font-black text-white">{tester.latency || '--'} <span className="text-[10px] text-slate-500 uppercase">ms</span></div>
                     </div>
-                    <div className={`p-6 rounded-2xl border ${tester.response?.classification ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/5 border-rose-500/20 text-rose-400'}`}>
+                    <div className={`p-6 rounded-2xl border ${tester.response?.classification || tester.response?.Classification ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/5 border-rose-500/20 text-rose-400'}`}>
                       <div className="flex items-center gap-3 mb-2">
-                        <i className={`fa-solid ${tester.response?.classification ? 'fa-check-double' : 'fa-triangle-exclamation'}`}></i>
+                        <i className={`fa-solid ${tester.response?.classification || tester.response?.Classification ? 'fa-check-double' : 'fa-triangle-exclamation'}`}></i>
                         <span className="text-[10px] font-black uppercase tracking-widest">COMPLIANCE_STATUS</span>
                       </div>
                       <p className="text-[11px] font-medium leading-relaxed">
-                        {tester.response?.classification 
+                        {tester.response?.classification || tester.response?.Classification 
                           ? 'Valid JSON schema: Identification fields present and accounted for.' 
-                          : 'Schema violation: Mandatory classification/confidence fields missing.'}
+                          : 'Schema violation: Mandatory classification/confidence fields missing or misnamed.'}
                       </p>
                     </div>
                   </div>
@@ -416,7 +474,6 @@ const App: React.FC = () => {
           </section>
         )}
 
-        {/* Honeypot & Guidelines Content remains consistent with theme */}
         {activeTab === 'honeypot' && (
           <section className="space-y-6 animate-in fade-in duration-300 max-w-4xl mx-auto">
             <div className="bg-slate-800/80 border border-slate-700 rounded-3xl p-8 shadow-xl backdrop-blur-md">

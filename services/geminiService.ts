@@ -10,8 +10,9 @@ export async function analyzeAudio(
   mimeType: string,
   targetLanguage: string
 ): Promise<AnalysisResult> {
-  // Using the native audio model for high-fidelity forensic analysis
-  const model = 'gemini-2.5-flash-native-audio-preview-12-2025';
+  // Switched to 'gemini-3-flash-preview' as it supports multimodal (audio) inputs via generateContent.
+  // The 'gemini-2.5-flash-native-audio-preview-12-2025' model is intended for the Live API.
+  const model = 'gemini-3-flash-preview';
   
   const systemInstruction = `
     You are an elite audio forensic scientist specializing in AI-generated voice detection (deepfakes).
@@ -36,7 +37,7 @@ export async function analyzeAudio(
           }
         },
         {
-          text: `Evaluate this audio sample for authenticity. Language: ${targetLanguage}.`
+          text: `Evaluate this audio sample for authenticity. Spoken Language: ${targetLanguage}. Determine if it is a real human recording or an AI-generated synthesis.`
         }
       ]
     },
@@ -84,6 +85,6 @@ export async function analyzeAudio(
     };
   } catch (error) {
     console.error("Analysis decoding failed:", error);
-    throw new Error("Forensic engine failed to provide a valid JSON report.");
+    throw new Error("Forensic engine failed to provide a valid JSON report. Please try again.");
   }
 }
