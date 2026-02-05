@@ -1,0 +1,7 @@
+{
+  "name": "VoiceGuard AI Detector",
+  "description": "A high-performance voice authenticity analyzer that detects AI-generated voices versus human speech across multiple languages with spectral reasoning.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
