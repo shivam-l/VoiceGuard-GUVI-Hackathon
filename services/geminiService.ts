@@ -2,26 +2,27 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { DetectionResultType, AnalysisResult } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Always use process.env.API_KEY directly as per guidelines
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export async function analyzeAudio(
   base64Audio: string,
   mimeType: string,
   targetLanguage: string
 ): Promise<AnalysisResult> {
-  const model = 'gemini-3-flash-preview';
+  // Using the native audio model for high-fidelity forensic analysis
+  const model = 'gemini-2.5-flash-native-audio-preview-12-2025';
   
   const systemInstruction = `
-    You are an expert audio forensic analyst specialized in detecting AI-generated voices (deepfakes).
-    Analyze the provided audio sample for:
-    1. Spectral anomalies common in synthetic speech.
-    2. Inconsistencies in breathing patterns and prosody.
-    3. Artifacts from specific TTS engines (e.g., metallic timbre, robotic pacing).
-    4. Language: ${targetLanguage}.
+    You are an elite audio forensic scientist specializing in AI-generated voice detection (deepfakes).
+    Your task is to analyze the provided audio for authenticity across the following criteria:
+    1. Spectral Signature: Check for phase discontinuities or unnatural frequency distributions.
+    2. Prosody & Breathing: Look for inconsistent intake of breath or lack of natural micro-hesitations.
+    3. Artifacts: Identify specific mechanical timbres associated with TTS models (e.g., ElevenLabs, RVC, VITS).
+    4. Language Context: The sample is in ${targetLanguage}.
     
-    You must classify the audio as either HUMAN or AI_GENERATED.
-    Provide a confidence score from 0.0 to 1.0.
-    Provide a detailed reasoning and specific spectral notes.
+    You MUST classify the output as either 'HUMAN' or 'AI_GENERATED'.
+    Include a confidence score (0.0 - 1.0), a concise reasoning, and technical spectral notes.
   `;
 
   const response = await ai.models.generateContent({
@@ -35,7 +36,7 @@ export async function analyzeAudio(
           }
         },
         {
-          text: `Analyze this voice sample for authenticity. The spoken language is expected to be ${targetLanguage}.`
+          text: `Evaluate this audio sample for authenticity. Language: ${targetLanguage}.`
         }
       ]
     },
@@ -55,15 +56,15 @@ export async function analyzeAudio(
           },
           language: {
             type: Type.STRING,
-            description: "Detected or confirmed language",
+            description: "The detected language",
           },
           reasoning: {
             type: Type.STRING,
-            description: "Detailed explanation of the classification",
+            description: "Technical reasoning for the classification",
           },
           spectralNotes: {
             type: Type.STRING,
-            description: "Notes on the frequency domain analysis",
+            description: "Specific observations on the audio spectrum",
           }
         },
         required: ["classification", "confidence", "language", "reasoning", "spectralNotes"]
@@ -72,7 +73,8 @@ export async function analyzeAudio(
   });
 
   try {
-    const data = JSON.parse(response.text || '{}');
+    const text = response.text || '{}';
+    const data = JSON.parse(text);
     return {
       classification: data.classification as DetectionResultType,
       confidence: data.confidence,
@@ -81,7 +83,7 @@ export async function analyzeAudio(
       spectralNotes: data.spectralNotes
     };
   } catch (error) {
-    console.error("Failed to parse Gemini response:", error);
-    throw new Error("Invalid response from analysis engine.");
+    console.error("Analysis decoding failed:", error);
+    throw new Error("Forensic engine failed to provide a valid JSON report.");
   }
 }

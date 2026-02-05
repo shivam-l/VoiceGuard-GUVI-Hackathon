@@ -29,8 +29,9 @@ export const SUPPORTED_LANGUAGES = [
 export interface TesterState {
   endpoint: string;
   apiKey: string;
-  audioUrl: string;
-  message: string;
+  language: string;
+  audioFormat: string;
+  audioBase64: string;
   status: 'idle' | 'loading' | 'success' | 'error';
   response: any;
   latency: number | null;
