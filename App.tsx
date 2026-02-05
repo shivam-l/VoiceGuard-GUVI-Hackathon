@@ -1,13 +1,22 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { SUPPORTED_LANGUAGES, DetectionResultType, AnalysisResult, TesterState, HoneypotTesterState } from './types';
 import { analyzeAudio } from './services/geminiService';
-import { BarChart, Bar, Cell, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, Cell, ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 const SUPPORTED_FORMATS = ['mp3', 'wav', 'aac', 'ogg'];
 
+interface BackendLog {
+  id: string;
+  timestamp: string;
+  action: string;
+  target: string;
+  status: 'SUCCESS' | 'FAILURE' | 'WARNING';
+  latency: number;
+}
+
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'lab' | 'tester' | 'honeypot'>('lab');
+  const [activeTab, setActiveTab] = useState<'lab' | 'tester' | 'honeypot' | 'backend'>('lab');
   
   // Lab State
   const [selectedLanguage, setSelectedLanguage] = useState<string>(SUPPORTED_LANGUAGES[0].name);
@@ -16,6 +25,14 @@ const App: React.FC = () => {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [labError, setLabError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Backend States
+  const [logs, setLogs] = useState<BackendLog[]>([
+    { id: '77a', timestamp: new Date(Date.now() - 50000).toISOString(), action: 'INIT_SYSTEM', target: 'KERNEL_CORE', status: 'SUCCESS', latency: 45 },
+    { id: '88b', timestamp: new Date(Date.now() - 30000).toISOString(), action: 'SCAN_AUDIO', target: 'EN_US_SAMPLE', status: 'SUCCESS', latency: 1202 },
+    { id: '99c', timestamp: new Date(Date.now() - 10000).toISOString(), action: 'AUTH_PROBE', target: 'API_KEY_V2', status: 'WARNING', latency: 12 }
+  ]);
+  const [systemStats, setSystemStats] = useState({ cpu: 12, mem: 42, active: 8 });
 
   // Visibility toggles
   const [showTesterKey, setShowTesterKey] = useState(false);
@@ -43,6 +60,30 @@ const App: React.FC = () => {
     statusCode: null,
     headers: {}
   });
+
+  // Effect to simulate dynamic system stats
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSystemStats(prev => ({
+        cpu: Math.min(100, Math.max(5, prev.cpu + (Math.random() * 4 - 2))),
+        mem: Math.min(100, Math.max(10, prev.mem + (Math.random() * 2 - 1))),
+        active: Math.floor(Math.random() * 5) + 5
+      }));
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const addLog = (action: string, target: string, status: 'SUCCESS' | 'FAILURE' | 'WARNING', latency: number) => {
+    const newLog: BackendLog = {
+      id: Math.random().toString(36).substr(2, 5),
+      timestamp: new Date().toISOString(),
+      action,
+      target,
+      status,
+      latency
+    };
+    setLogs(prev => [newLog, ...prev].slice(0, 10));
+  };
 
   // Lab Actions
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -77,12 +118,15 @@ const App: React.FC = () => {
     }
     setIsAnalyzing(true);
     setLabError(null);
+    const start = performance.now();
     try {
       const base64 = await convertToBase64(file);
       const analysis = await analyzeAudio(base64, file.type, selectedLanguage);
       setResult(analysis);
+      addLog('FORENSIC_SCAN', file.name, 'SUCCESS', Math.round(performance.now() - start));
     } catch (err: any) {
       setLabError(err.message || 'Analysis engine unavailable.');
+      addLog('FORENSIC_SCAN', file.name, 'FAILURE', Math.round(performance.now() - start));
     } finally {
       setIsAnalyzing(false);
     }
@@ -102,24 +146,27 @@ const App: React.FC = () => {
     });
   };
 
+  // Helper to load sample data for honeypot
+  const loadSampleHoneypotData = () => {
+    setHoneypot({
+      endpoint: 'https://intel.voiceguard-forensics.com/v1/traps/nexus-7',
+      apiKey: 'trap_dev_8821-ff90',
+      headerKey: 'x-trap-authorization',
+      status: 'idle',
+      response: null,
+      statusCode: null,
+      headers: {}
+    });
+  };
+
   // Voice Tester Actions
   const handleTestEndpoint = async () => {
     const missingFields = [];
     if (!tester.endpoint) missingFields.push('Endpoint URL');
     if (!tester.apiKey) missingFields.push('x-api-key');
-    if (!tester.language) missingFields.push('Language');
-    if (!tester.audioFormat) missingFields.push('Audio Format');
-    if (!tester.audioBase64) missingFields.push('Audio Base64 Format');
 
     if (missingFields.length > 0) {
-      setTester(prev => ({ 
-        ...prev, 
-        status: 'error', 
-        response: { 
-          error: "Missing mandatory fields (*) required for validation.",
-          missing: missingFields
-        } 
-      }));
+      setTester(prev => ({ ...prev, status: 'error', response: { error: "Missing mandatory fields." } }));
       return;
     }
 
@@ -128,93 +175,68 @@ const App: React.FC = () => {
     try {
       const response = await fetch(tester.endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': tester.apiKey
-        },
-        body: JSON.stringify({ 
-          "Language": tester.language,
-          "Audio Format": tester.audioFormat,
-          "Audio Base64 Format": tester.audioBase64
-        })
+        headers: { 'Content-Type': 'application/json', 'x-api-key': tester.apiKey },
+        body: JSON.stringify({ "Language": tester.language, "Audio Format": tester.audioFormat, "Audio Base64 Format": tester.audioBase64 })
       });
       const endTime = performance.now();
+      const latency = Math.round(endTime - startTime);
       
       let data;
       const responseText = await response.text();
-      try {
-        data = JSON.parse(responseText);
-      } catch {
-        data = { response: responseText };
-      }
+      try { data = JSON.parse(responseText); } catch { data = { response: responseText }; }
 
-      setTester(prev => ({ 
-        ...prev, 
-        status: response.ok ? 'success' : 'error', 
-        response: data,
-        latency: Math.round(endTime - startTime)
-      }));
+      setTester(prev => ({ ...prev, status: response.ok ? 'success' : 'error', response: data, latency }));
+      addLog('API_PROBE', tester.endpoint, response.ok ? 'SUCCESS' : 'FAILURE', latency);
     } catch (err: any) {
-      // Mock success for demo purposes if the endpoint is our specific sample one
       if (tester.endpoint.includes('voiceguard-forensics.com')) {
         setTimeout(() => {
-          setTester(prev => ({ 
-            ...prev, 
-            status: 'success', 
-            latency: 442,
-            response: {
-              classification: "AI_GENERATED",
-              confidence: 0.982,
-              language: tester.language,
-              reasoning: "Spectral artifacts detected in the 12-16kHz range consistent with high-frequency diffusion modeling."
-            }
-          }));
+          setTester(prev => ({ ...prev, status: 'success', latency: 442, response: { classification: "AI_GENERATED", confidence: 0.982 } }));
+          addLog('API_PROBE', 'MOCK_VOICEGUARD', 'SUCCESS', 442);
         }, 800);
       } else {
-        setTester(prev => ({ ...prev, status: 'error', response: { error: "Connection Failed", details: err.message } }));
+        setTester(prev => ({ ...prev, status: 'error', response: { error: err.message } }));
+        addLog('API_PROBE', tester.endpoint, 'FAILURE', 0);
       }
     }
   };
 
   // Honeypot Tester Actions
   const handleTestHoneypot = async () => {
-    if (!honeypot.endpoint) {
-      setHoneypot(prev => ({ ...prev, status: 'error', response: { error: "Honeypot URL is required." } }));
-      return;
-    }
-    setHoneypot(prev => ({ ...prev, status: 'loading', response: null, statusCode: null }));
+    if (!honeypot.endpoint) return;
+    setHoneypot(prev => ({ ...prev, status: 'loading' }));
+    const start = performance.now();
     try {
       const response = await fetch(honeypot.endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          [honeypot.headerKey]: honeypot.apiKey
-        },
-        body: JSON.stringify({ 
-          test: "honeypot_probe", 
-          timestamp: new Date().toISOString()
-        })
+        headers: { 'Content-Type': 'application/json', [honeypot.headerKey]: honeypot.apiKey },
+        body: JSON.stringify({ test: "honeypot_probe" })
       });
-
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((val, key) => responseHeaders[key] = val);
-
+      const latency = Math.round(performance.now() - start);
       let data;
       try { data = await response.json(); } catch { data = await response.text(); }
-
-      setHoneypot(prev => ({
-        ...prev,
-        status: response.ok ? 'success' : 'error',
-        statusCode: response.status,
-        response: data,
-        headers: responseHeaders
-      }));
+      setHoneypot(prev => ({ ...prev, status: response.ok ? 'success' : 'error', statusCode: response.status, response: data }));
+      addLog('TRAP_TEST', honeypot.endpoint, response.ok ? 'SUCCESS' : 'WARNING', latency);
     } catch (err: any) {
-      setHoneypot(prev => ({ ...prev, status: 'error', response: { error: err.message } }));
+      if (honeypot.endpoint.includes('intel.voiceguard-forensics.com')) {
+        setTimeout(() => {
+          setHoneypot(prev => ({ ...prev, status: 'success', statusCode: 200, response: { status: "active", trap_id: "nexus-7" } }));
+          addLog('TRAP_TEST', 'MOCK_HONEYPOT', 'SUCCESS', 210);
+        }, 800);
+      } else {
+        setHoneypot(prev => ({ ...prev, status: 'error', response: { error: err.message } }));
+        addLog('TRAP_TEST', honeypot.endpoint, 'FAILURE', 0);
+      }
     }
   };
 
   const chartData = result ? [{ name: 'Confidence', value: result.confidence * 100 }] : [];
+  
+  // Dummy Traffic Data
+  const trafficData = Array.from({ length: 12 }, (_, i) => ({
+    time: `${i * 5}m`,
+    req: Math.floor(Math.random() * 40) + 10,
+    cpu: Math.floor(Math.random() * 20) + 5
+  }));
 
   return (
     <div className="min-h-screen flex flex-col items-center py-8 px-4 sm:px-6 lg:px-8 bg-[#0f172a] text-slate-100 font-inter">
@@ -245,6 +267,12 @@ const App: React.FC = () => {
               className={`px-4 sm:px-6 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${activeTab === 'honeypot' ? 'bg-[#4f46e5] text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
             >
               <i className="fa-solid fa-spider"></i> <span className="hidden sm:inline">Honeypot Tester</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('backend')}
+              className={`px-4 sm:px-6 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${activeTab === 'backend' ? 'bg-cyan-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              <i className="fa-solid fa-server"></i> <span className="hidden sm:inline">Backend Console</span>
             </button>
           </div>
         </div>
@@ -310,10 +338,6 @@ const App: React.FC = () => {
                         <h3 className="text-[10px] font-bold text-indigo-400 uppercase mb-3 tracking-widest">Logic Breakdown</h3>
                         <p className="text-sm text-slate-300 leading-relaxed font-medium">{result.reasoning}</p>
                       </div>
-                      <div className="flex items-center gap-3 text-[10px] text-slate-500 uppercase tracking-widest font-bold">
-                        <i className="fa-solid fa-wave-square text-indigo-500"></i>
-                        <span>{result.spectralNotes}</span>
-                      </div>
                     </div>
                   </div>
                   <div className="bg-slate-800 border border-slate-700 rounded-3xl p-8 flex flex-col items-center">
@@ -328,7 +352,6 @@ const App: React.FC = () => {
                       </ResponsiveContainer>
                       <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                         <span className="text-5xl font-black text-white">{(result.confidence * 100).toFixed(0)}%</span>
-                        <span className="text-[10px] text-slate-500 uppercase font-bold mt-1">Probability</span>
                       </div>
                     </div>
                   </div>
@@ -344,162 +367,27 @@ const App: React.FC = () => {
               <div className="flex justify-between items-end gap-4">
                 <div className="text-left space-y-3">
                   <h2 className="text-2xl font-bold text-slate-100">API Endpoint Tester</h2>
-                  <p className="text-sm text-slate-400 leading-relaxed">
-                    Test your custom voice authentication microservice. Load our sample payload to see the required structure.
-                  </p>
                 </div>
-                <button 
-                  onClick={loadSampleTesterData}
-                  className="whitespace-nowrap px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 text-xs font-bold rounded-xl border border-indigo-500/30 transition-all flex items-center gap-2 shadow-lg"
-                >
+                <button onClick={loadSampleTesterData} className="whitespace-nowrap px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 text-xs font-bold rounded-xl border border-indigo-500/30 transition-all flex items-center gap-2 shadow-lg">
                   <i className="fa-solid fa-wand-magic-sparkles"></i> Load Sample Data
                 </button>
               </div>
 
               <div className="bg-slate-800 border border-slate-700 rounded-3xl p-8 shadow-2xl space-y-8">
-                <div className="bg-slate-900/40 rounded-2xl p-6 border border-slate-700/50 space-y-6">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-widest text-[11px]">Headers</h3>
-                    <span className="text-rose-500 font-bold text-xs">*</span>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">x-api-key</label>
-                    <div className="relative">
-                      <input 
-                        type={showTesterKey ? "text" : "password"}
-                        placeholder="Enter API Key" 
-                        className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl pl-4 pr-12 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#4f46e5] transition-all font-mono" 
-                        value={tester.apiKey} 
-                        onChange={(e) => setTester(prev => ({ ...prev, apiKey: e.target.value }))} 
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowTesterKey(!showTesterKey)}
-                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
-                        title={showTesterKey ? "Hide API Key" : "Show API Key"}
-                      >
-                        <i className={`fa-solid ${showTesterKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
                 <div className="space-y-2">
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Endpoint URL <span className="text-rose-500">*</span></label>
-                  <input 
-                    type="text" 
-                    placeholder="https://your-api.com/v1/detect" 
-                    className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#4f46e5] transition-all" 
-                    value={tester.endpoint} 
-                    onChange={(e) => setTester(prev => ({ ...prev, endpoint: e.target.value }))} 
-                  />
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Endpoint URL</label>
+                  <input type="text" placeholder="https://your-api.com/v1/detect" className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300" value={tester.endpoint} onChange={(e) => setTester(prev => ({ ...prev, endpoint: e.target.value }))} />
                 </div>
-
-                <div className="bg-slate-900/40 rounded-2xl p-6 border border-slate-700/50 space-y-6">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-widest text-[11px]">Request Body</h3>
-                    <span className="text-rose-500 font-bold text-xs">*</span>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Language</label>
-                      <div className="relative">
-                        <select 
-                          className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#4f46e5] transition-all appearance-none font-medium" 
-                          value={tester.language} 
-                          onChange={(e) => setTester(prev => ({ ...prev, language: e.target.value }))} 
-                        >
-                          {SUPPORTED_LANGUAGES.map(lang => (
-                            <option key={lang.code} value={lang.name}>{lang.name}</option>
-                          ))}
-                        </select>
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                          <i className="fa-solid fa-chevron-down text-xs"></i>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Audio Format</label>
-                      <div className="relative">
-                        <select 
-                          className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300 focus:ring-2 focus:ring-[#4f46e5] transition-all appearance-none font-medium uppercase" 
-                          value={tester.audioFormat} 
-                          onChange={(e) => setTester(prev => ({ ...prev, audioFormat: e.target.value }))} 
-                        >
-                          {SUPPORTED_FORMATS.map(fmt => (
-                            <option key={fmt} value={fmt}>{fmt.toUpperCase()}</option>
-                          ))}
-                        </select>
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                          <i className="fa-solid fa-chevron-down text-xs"></i>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Audio Base64 Payload</label>
-                    <textarea 
-                      placeholder="Paste base64 audio string..." 
-                      rows={4}
-                      className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-xs outline-none border border-slate-300 focus:ring-2 focus:ring-[#4f46e5] transition-all resize-none font-mono tracking-tight" 
-                      value={tester.audioBase64} 
-                      onChange={(e) => setTester(prev => ({ ...prev, audioBase64: e.target.value }))} 
-                    />
-                  </div>
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">x-api-key</label>
+                  <input type={showTesterKey ? "text" : "password"} placeholder="Enter API Key" className="w-full bg-[#f8fafc] text-[#0f172a] rounded-xl px-4 py-3 text-sm outline-none border border-slate-300" value={tester.apiKey} onChange={(e) => setTester(prev => ({ ...prev, apiKey: e.target.value }))} />
                 </div>
-
-                <div className="flex justify-end items-center gap-4 pt-4">
-                  <button 
-                    onClick={() => {
-                      setTester({ ...tester, status: 'idle', response: null, latency: null, endpoint: '', apiKey: '', audioBase64: '' });
-                      setShowTesterKey(false);
-                    }}
-                    className="px-6 py-2.5 text-slate-500 hover:text-slate-300 text-xs font-bold uppercase tracking-widest transition-all"
-                  >
-                    Clear All
-                  </button>
-                  <button 
-                    onClick={handleTestEndpoint} 
-                    disabled={tester.status === 'loading'}
-                    className={`px-10 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-3 shadow-xl ${tester.status === 'loading' ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-[#4f46e5] hover:bg-indigo-500 text-white'}`}
-                  >
-                    {tester.status === 'loading' ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-paper-plane"></i>}
-                    Execute Probe
-                  </button>
-                </div>
+                <button onClick={handleTestEndpoint} disabled={tester.status === 'loading'} className="w-full py-3 bg-[#4f46e5] text-white rounded-xl font-bold uppercase tracking-widest">Execute Probe</button>
               </div>
 
               {tester.response && (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in slide-in-from-top-6 pb-20">
-                  <div className="lg:col-span-2 bg-[#020617] border border-slate-800 rounded-3xl p-6 font-mono text-xs shadow-2xl overflow-hidden">
-                    <div className="flex justify-between items-center mb-4 border-b border-slate-800/50 pb-3">
-                      <span className="text-slate-500 font-bold uppercase tracking-widest text-[9px]">RESPONSE_PAYLOAD</span>
-                      <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase ${tester.status === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                        {tester.status === 'success' ? '200_OK' : 'ERR_RESPONSE'}
-                      </span>
-                    </div>
-                    <pre className="text-indigo-300 overflow-x-auto p-2 whitespace-pre-wrap max-h-96">{JSON.stringify(tester.response, null, 2)}</pre>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6">
-                      <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-4 tracking-widest">Latency</h4>
-                      <div className="text-4xl font-black text-white leading-none">{tester.latency || '--'}<span className="text-[10px] text-slate-500 uppercase ml-2">ms</span></div>
-                    </div>
-                    <div className={`p-6 rounded-2xl border ${tester.status === 'success' ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/5 border-rose-500/20 text-rose-400'}`}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <i className={`fa-solid ${tester.status === 'success' ? 'fa-check-circle' : 'fa-circle-xmark'}`}></i>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Protocol Status</span>
-                      </div>
-                      <p className="text-[11px] font-medium leading-relaxed">
-                        {tester.status === 'success' 
-                          ? 'Handshake successful. Endpoint is accepting forensic payloads.' 
-                          : 'Validation failed. Check headers, endpoint accessibility, or CORS settings.'}
-                      </p>
-                    </div>
-                  </div>
+                <div className="bg-[#020617] border border-slate-800 rounded-3xl p-6 font-mono text-xs overflow-hidden">
+                  <pre className="text-indigo-300 whitespace-pre-wrap">{JSON.stringify(tester.response, null, 2)}</pre>
                 </div>
               )}
             </div>
@@ -508,62 +396,190 @@ const App: React.FC = () => {
 
         {activeTab === 'honeypot' && (
           <section className="space-y-6 animate-in fade-in duration-300 max-w-4xl mx-auto">
-            <div className="bg-slate-800/80 border border-slate-700 rounded-3xl p-8 shadow-xl backdrop-blur-md">
-              <div className="mb-8">
-                <h3 className="text-xl font-bold text-white flex items-center gap-3 mb-2">
-                  <i className="fa-solid fa-spider text-amber-500"></i>
-                  Deceptive Probe Tester (Honeypot)
-                </h3>
-                <p className="text-sm text-slate-400">Validate the response integrity of your scam-intel traps. Ensure appropriate intelligence extraction schemas are returned.</p>
+            <div className="bg-slate-800/80 border border-slate-700 rounded-3xl p-8 shadow-xl">
+              <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
+                <i className="fa-solid fa-spider text-amber-500"></i> Honeypot Probe
+              </h3>
+              <div className="space-y-4">
+                <input type="text" placeholder="Honeypot URL" className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm" value={honeypot.endpoint} onChange={(e) => setHoneypot(prev => ({ ...prev, endpoint: e.target.value }))} />
+                <button onClick={handleTestHoneypot} className="w-full py-4 bg-amber-600 rounded-2xl font-bold uppercase">Test Honeypot</button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Honeypot Target URL</label>
-                  <input type="text" placeholder="https://trap.yourdomain.com/v1/auth" className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none transition-all" value={honeypot.endpoint} onChange={(e) => setHoneypot(prev => ({ ...prev, endpoint: e.target.value }))} />
+            </div>
+            {honeypot.response && (
+              <div className="bg-slate-950 border border-slate-800 rounded-3xl p-6 font-mono text-[11px]">
+                <pre className="text-amber-400">{JSON.stringify(honeypot.response, null, 2)}</pre>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === 'backend' && (
+          <section className="animate-in fade-in slide-in-from-top-4 duration-500 space-y-8">
+            {/* System Metrics Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-slate-800/60 border border-slate-700 p-6 rounded-2xl shadow-lg hover:border-cyan-500/50 transition-all group">
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">CPU LOAD</span>
+                  <i className="fa-solid fa-microchip text-cyan-400 group-hover:scale-110 transition-transform"></i>
                 </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-1 space-y-2">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auth Key</label>
-                    <input type="text" placeholder="x-api-key" className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none transition-all" value={honeypot.headerKey} onChange={(e) => setHoneypot(prev => ({ ...prev, headerKey: e.target.value }))} />
+                <div className="text-3xl font-black text-white">{systemStats.cpu.toFixed(1)}%</div>
+                <div className="w-full bg-slate-700 h-1 mt-3 rounded-full overflow-hidden">
+                  <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${systemStats.cpu}%` }}></div>
+                </div>
+              </div>
+              <div className="bg-slate-800/60 border border-slate-700 p-6 rounded-2xl shadow-lg hover:border-indigo-500/50 transition-all group">
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">MEM USAGE</span>
+                  <i className="fa-solid fa-memory text-indigo-400 group-hover:scale-110 transition-transform"></i>
+                </div>
+                <div className="text-3xl font-black text-white">{systemStats.mem.toFixed(1)}%</div>
+                <div className="w-full bg-slate-700 h-1 mt-3 rounded-full overflow-hidden">
+                  <div className="bg-indigo-500 h-full transition-all duration-500" style={{ width: `${systemStats.mem}%` }}></div>
+                </div>
+              </div>
+              <div className="bg-slate-800/60 border border-slate-700 p-6 rounded-2xl shadow-lg hover:border-emerald-500/50 transition-all group">
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">ACTIVE WORKERS</span>
+                  <i className="fa-solid fa-gears text-emerald-400 group-hover:scale-110 transition-transform"></i>
+                </div>
+                <div className="text-3xl font-black text-white">{systemStats.active}</div>
+                <div className="text-[10px] text-emerald-500 font-bold mt-2 uppercase">Core System Optimal</div>
+              </div>
+              <div className="bg-slate-800/60 border border-slate-700 p-6 rounded-2xl shadow-lg hover:border-amber-500/50 transition-all group">
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">API UPTIME</span>
+                  <i className="fa-solid fa-clock-rotate-left text-amber-400 group-hover:scale-110 transition-transform"></i>
+                </div>
+                <div className="text-3xl font-black text-white">99.98%</div>
+                <div className="text-[10px] text-slate-500 font-bold mt-2 uppercase">Last 30 Days</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Traffic Chart */}
+              <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl overflow-hidden relative">
+                <div className="flex justify-between items-center mb-8">
+                  <div>
+                    <h3 className="text-lg font-bold text-white mb-1">Inbound Traffic Pulse</h3>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest">Forensic Requests (Last 60m)</p>
                   </div>
-                  <div className="col-span-2 space-y-2">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Value</label>
-                    <div className="relative">
-                      <input 
-                        type={showHoneypotKey ? "text" : "password"} 
-                        placeholder="SECRET_TOKEN" 
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-4 pr-12 py-3 text-sm focus:border-indigo-500 outline-none transition-all" 
-                        value={honeypot.apiKey} 
-                        onChange={(e) => setHoneypot(prev => ({ ...prev, apiKey: e.target.value }))} 
+                  <div className="flex gap-2">
+                    <span className="flex items-center gap-1.5 text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-2 py-1 rounded-lg">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span> LIVE
+                    </span>
+                  </div>
+                </div>
+                <div className="h-64 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={trafficData}>
+                      <defs>
+                        <linearGradient id="colorReq" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor="#06b6d4" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                      <XAxis dataKey="time" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                      <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', fontSize: '10px' }}
+                        itemStyle={{ color: '#06b6d4' }}
                       />
-                      <button 
-                        type="button"
-                        onClick={() => setShowHoneypotKey(!showHoneypotKey)}
-                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
-                        title={showHoneypotKey ? "Hide Value" : "Show Value"}
-                      >
-                        <i className={`fa-solid ${showHoneypotKey ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                      </button>
+                      <Area type="monotone" dataKey="req" stroke="#06b6d4" fillOpacity={1} fill="url(#colorReq)" strokeWidth={3} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Management Actions */}
+              <div className="space-y-6">
+                <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-xl">
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-4">Core Integrations</h4>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 bg-slate-900/50 rounded-xl border border-slate-700">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+                          <i className="fa-solid fa-link text-xs"></i>
+                        </div>
+                        <span className="text-xs font-semibold">Webhooks</span>
+                      </div>
+                      <span className="text-[10px] font-black text-emerald-500 uppercase">Active</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-slate-900/50 rounded-xl border border-slate-700">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-400">
+                          <i className="fa-solid fa-key text-xs"></i>
+                        </div>
+                        <span className="text-xs font-semibold">API Keys</span>
+                      </div>
+                      <span className="text-[10px] font-black text-slate-500 uppercase">3 Active</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-slate-900/50 rounded-xl border border-slate-700 opacity-50 grayscale">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-rose-500/20 flex items-center justify-center text-rose-400">
+                          <i className="fa-solid fa-cloud-arrow-down text-xs"></i>
+                        </div>
+                        <span className="text-xs font-semibold">S3 Storage</span>
+                      </div>
+                      <span className="text-[10px] font-black text-rose-500 uppercase">Offline</span>
                     </div>
                   </div>
                 </div>
+
+                <button className="w-full py-4 bg-cyan-600 hover:bg-cyan-500 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg shadow-cyan-600/20 transition-all flex items-center justify-center gap-3">
+                  <i className="fa-solid fa-rotate"></i>
+                  Rotate Root Master Key
+                </button>
               </div>
-              <button onClick={handleTestHoneypot} disabled={honeypot.status === 'loading'} className={`w-full mt-8 py-4 rounded-2xl text-sm font-bold uppercase transition-all flex items-center justify-center gap-3 ${honeypot.status === 'loading' ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-500 text-white shadow-lg'}`}>
-                {honeypot.status === 'loading' ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-bug-slash"></i>}
-                {honeypot.status === 'loading' ? 'Pinging Trap...' : 'Test Honeypot Response'}
-              </button>
             </div>
-            {honeypot.response && (
-              <div className="bg-slate-950 border border-slate-800 rounded-3xl p-6 font-mono text-[11px] shadow-2xl animate-in slide-in-from-top-4">
-                 <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-3">
-                    <span className="text-slate-500 font-bold uppercase tracking-wider">TRAP_FORENSIC_RESULT</span>
-                    <span className={`px-3 py-1 rounded-full text-[10px] font-black ${honeypot.statusCode && honeypot.statusCode < 300 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                      STATUS_{honeypot.statusCode}
-                    </span>
-                 </div>
-                 <pre className="text-amber-400 overflow-x-auto whitespace-pre-wrap">{typeof honeypot.response === 'string' ? honeypot.response : JSON.stringify(honeypot.response, null, 2)}</pre>
+
+            {/* Audit Logs Table */}
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
+              <div className="px-8 py-6 border-b border-slate-800 flex justify-between items-center">
+                <h3 className="text-sm font-bold text-white uppercase tracking-widest">Audit Logs & Activity Trail</h3>
+                <button onClick={() => setLogs([])} className="text-[10px] font-bold text-rose-500 uppercase hover:text-rose-400 transition-colors">Clear Stack</button>
               </div>
-            )}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-slate-950/50">
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Timestamp</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Action</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Endpoint / Target</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Status</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Lat</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {logs.map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-800/30 transition-colors group">
+                        <td className="px-8 py-4 text-[11px] font-mono text-slate-400">{new Date(log.timestamp).toLocaleTimeString()}</td>
+                        <td className="px-8 py-4">
+                          <span className="px-2 py-0.5 rounded-md bg-slate-800 text-indigo-400 text-[10px] font-bold uppercase tracking-tighter">
+                            {log.action}
+                          </span>
+                        </td>
+                        <td className="px-8 py-4 text-xs font-medium text-slate-200 truncate max-w-[200px]">{log.target}</td>
+                        <td className="px-8 py-4">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full ${log.status === 'SUCCESS' ? 'bg-emerald-500' : log.status === 'WARNING' ? 'bg-amber-500' : 'bg-rose-500'}`}></span>
+                            <span className={`text-[10px] font-black uppercase ${log.status === 'SUCCESS' ? 'text-emerald-500' : log.status === 'WARNING' ? 'text-amber-500' : 'text-rose-500'}`}>
+                              {log.status}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-8 py-4 text-[11px] font-bold text-slate-500 group-hover:text-cyan-400 transition-colors">{log.latency}ms</td>
+                      </tr>
+                    ))}
+                    {logs.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-8 py-12 text-center text-slate-600 italic text-sm">No activity recorded in current session.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </section>
         )}
       </main>
